@@ -16,7 +16,13 @@ async def main():
         await client.ensure_login()
         session_after = await client.session()
         print("authenticated_after=", session_after.get("authenticated"))
-        projects = await client.projects(require_login=True, per_page=5)
+        projects = await client.projects(
+            require_login=True,
+            query="python, сайт",
+            categories=["it", "web"],
+            min_budget=1000,
+            per_page=5,
+        )
         print(f"auth_projects={len(projects)}")
         if projects:
             print(projects[0]["title"])

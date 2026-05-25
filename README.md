@@ -13,9 +13,56 @@ search HTML page.
 | Tool | What it does |
 | --- | --- |
 | `freelanceru_session` | Checks login/session status |
-| `freelanceru_projects` | Lists projects from `https://freelance.ru/project/search/pro` |
+| `freelanceru_projects` | Searches projects from `https://freelance.ru/project/search/pro` with real site filters |
 | `freelanceru_project` | Fetches one project detail page by URL or id |
+| `freelanceru_categories` | Returns category ids and payment filter ids |
 | `freelanceru_captcha_required` | Checks whether login currently requires captcha |
+
+## Project Search Filters
+
+`freelanceru_projects` maps directly to the search form on
+`https://freelance.ru/project/search/pro`:
+
+| Tool argument | Site parameter | Meaning |
+| --- | --- | --- |
+| `query` | `q` | Keywords, comma-separated |
+| `exclude` | `e` | Stop words, comma-separated |
+| `match_mode` | `m` | `or` for any keyword, `and` for all keywords |
+| `categories` | `c[]` | Category aliases, names, or ids |
+| `min_budget` | `f` | Minimum budget |
+| `max_budget` | `t` | Maximum budget |
+| `include_open_for_all` | `a` | Include projects open to everyone |
+| `include_premium` | `v` | Include premium-access projects |
+| `include_without_budget` | `o` | Include projects without stated budget |
+| `payment_types` | `b[]` | `agreement`, `safe_deal`, `contract` or ids `1`, `2`, `3` |
+| `page` | `page` | Page number |
+| `per_page` | `per-page` | Items per page, capped at 50 |
+
+Common category aliases:
+
+```text
+web -> Веб-разработка и Продуктовый дизайн
+it -> ИТ и Разработка
+ai -> Искусственный интеллект
+texts -> Тексты
+marketing -> Маркетинг и Реклама
+seo -> Интернет продвижение
+engineering -> Инженерия
+```
+
+Example:
+
+```text
+freelanceru_projects(
+  query="python, парсер",
+  match_mode="or",
+  categories=["it", "web"],
+  min_budget=5000,
+  include_without_budget=false,
+  payment_types=["safe_deal"],
+  page=1
+)
+```
 
 ## Install
 

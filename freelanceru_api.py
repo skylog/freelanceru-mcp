@@ -17,6 +17,32 @@ SESSION_URL = f"{ID_BASE_URL}/api/auth/session"
 CAPTCHA_REQUIRED_URL = f"{ID_BASE_URL}/api/auth/login/captcha-required"
 PROJECTS_URL = f"{BASE_URL}/project/search/pro"
 
+CATEGORIES = {
+    "3d": {"id": "577", "name": "3D графика"},
+    "art": {"id": "590", "name": "Арт и Иллюстрации"},
+    "consulting": {"id": "133", "name": "Аутсорсинг и Консалтинг"},
+    "web": {"id": "116", "name": "Веб-разработка и Продуктовый дизайн"},
+    "graphic_design": {"id": "40", "name": "Графический дизайн"},
+    "space_design": {"id": "716", "name": "Дизайн пространства"},
+    "engineering": {"id": "186", "name": "Инженерия"},
+    "seo": {"id": "673", "name": "Интернет продвижение"},
+    "ai": {"id": "724", "name": "Искусственный интеллект"},
+    "it": {"id": "4", "name": "ИТ и Разработка"},
+    "marketing": {"id": "117", "name": "Маркетинг и Реклама"},
+    "motion": {"id": "565", "name": "Медиа и Моушен дизайн"},
+    "music": {"id": "89", "name": "Музыка и Звук"},
+    "education": {"id": "663", "name": "Обучение и Образование"},
+    "translation": {"id": "29", "name": "Переводы"},
+    "texts": {"id": "124", "name": "Тексты"},
+    "photo": {"id": "98", "name": "Фотография"},
+}
+
+PAYMENT_TYPES = {
+    "agreement": "1",
+    "safe_deal": "2",
+    "contract": "3",
+}
+
 
 class FreelanceRuError(RuntimeError):
     pass
@@ -130,15 +156,35 @@ class FreelanceRuClient:
     async def projects(
         self,
         query: str | None = None,
+        exclude: str | None = None,
+        match_mode: str = "or",
+        categories: list[str] | None = None,
+        min_budget: int | None = None,
+        max_budget: int | None = None,
+        include_open_for_all: bool = True,
+        include_premium: bool = True,
+        include_without_budget: bool = True,
+        payment_types: list[str] | None = None,
         page: int = 1,
         per_page: int = 25,
         require_login: bool = True,
     ) -> list[dict[str, Any]]:
         if require_login:
             await self.ensure_login()
-        params: dict[str, Any] = {"page": page, "per-page": per_page}
-        if query:
-            params["q"] = query
+        params = build_search_params(
+            query=query,
+            exclude=exclude,
+            match_mode=match_mode,
+            categories=categories,
+            min_budget=min_budget,
+            max_budget=max_budget,
+            include_open_for_all=include_open_for_all,
+            include_premium=include_premium,
+            include_without_budget=include_without_budget,
+            payment_types=payment_types,
+            page=page,
+            per_page=per_page,
+        )
         response = await self.http.get(PROJECTS_URL, params=params)
         response.raise_for_status()
         return [asdict(project) for project in parse_projects(response.text)]
@@ -161,6 +207,72 @@ def normalize_project_url(project_id_or_url: str) -> str:
     if value.isdigit():
         return f"{BASE_URL}/projects/{value}.html"
     return urljoin(BASE_URL, value)
+
+
+def build_search_params(
+    query: str | None = None,
+    exclude: str | None = None,
+    match_mode: str = "or",
+    categories: list[str] | None = None,
+    min_budget: int | None = None,
+    max_budget: int | None = None,
+    include_open_for_all: bool = True,
+    include_premium: bool = True,
+    include_without_budget: bool = True,
+    payment_types: list[str] | None = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> list[tuple[str, Any]]:
+    params: list[tuple[str, Any]] = [
+        ("page", max(1, page)),
+        ("per-page", max(1, min(per_page, 50))),
+    ]
+    if query:
+        params.append(("q", query))
+        params.append(("m", "and" if match_mode == "and" else "or"))
+    if exclude:
+        params.append(("e", exclude))
+    for category in resolve_categories(categories or []):
+        params.append(("c[]", category))
+    if min_budget is not None:
+        params.append(("f", max(0, int(min_budget))))
+    if max_budget is not None:
+        params.append(("t", max(0, int(max_budget))))
+    params.append(("a", "1" if include_open_for_all else "0"))
+    params.append(("v", "1" if include_premium else "0"))
+    params.append(("o", "1" if include_without_budget else "0"))
+    for payment_type in resolve_payment_types(payment_types or []):
+        params.append(("b[]", payment_type))
+    return params
+
+
+def resolve_categories(categories: list[str]) -> list[str]:
+    resolved = []
+    lower_name_map = {v["name"].lower(): v["id"] for v in CATEGORIES.values()}
+    for item in categories:
+        value = str(item).strip()
+        if not value:
+            continue
+        if value in {v["id"] for v in CATEGORIES.values()}:
+            resolved.append(value)
+            continue
+        if value in CATEGORIES:
+            resolved.append(CATEGORIES[value]["id"])
+            continue
+        by_name = lower_name_map.get(value.lower())
+        if by_name:
+            resolved.append(by_name)
+    return list(dict.fromkeys(resolved))
+
+
+def resolve_payment_types(payment_types: list[str]) -> list[str]:
+    resolved = []
+    for item in payment_types:
+        value = str(item).strip()
+        if not value:
+            continue
+        resolved.append(PAYMENT_TYPES.get(value, value))
+    return [v for v in dict.fromkeys(resolved) if v in set(PAYMENT_TYPES.values())]
 
 
 def parse_projects(page: str) -> list[Project]:

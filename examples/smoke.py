@@ -10,7 +10,13 @@ from freelanceru_api import FreelanceRuClient
 async def main():
     client = FreelanceRuClient()
     try:
-        projects = await client.projects(require_login=False, per_page=5)
+        projects = await client.projects(
+            require_login=False,
+            query="python, сайт",
+            categories=["it", "web"],
+            min_budget=1000,
+            per_page=5,
+        )
         print(f"projects={len(projects)}")
         if projects:
             print(projects[0]["title"])

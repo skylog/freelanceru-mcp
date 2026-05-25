@@ -5,7 +5,7 @@ from typing import Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from freelanceru_api import FreelanceRuClient
+from freelanceru_api import CATEGORIES, PAYMENT_TYPES, FreelanceRuClient
 
 load_dotenv()
 
@@ -34,15 +34,33 @@ async def freelanceru_session() -> dict[str, Any]:
 @mcp.tool()
 async def freelanceru_projects(
     query: str = "",
+    exclude: str = "",
+    match_mode: str = "or",
+    categories: list[str] | None = None,
+    min_budget: int | None = None,
+    max_budget: int | None = None,
+    include_open_for_all: bool = True,
+    include_premium: bool = True,
+    include_without_budget: bool = True,
+    payment_types: list[str] | None = None,
     page: int = 1,
     per_page: int = 25,
     require_login: bool = True,
 ) -> list[dict[str, Any]]:
-    """List Freelance.ru projects from the project search feed."""
+    """Search Freelance.ru projects with the same filters as /project/search/pro."""
 
     async def run(client: FreelanceRuClient):
         return await client.projects(
             query=query or None,
+            exclude=exclude or None,
+            match_mode=match_mode,
+            categories=categories or [],
+            min_budget=min_budget,
+            max_budget=max_budget,
+            include_open_for_all=include_open_for_all,
+            include_premium=include_premium,
+            include_without_budget=include_without_budget,
+            payment_types=payment_types or [],
             page=max(1, page),
             per_page=max(1, min(per_page, 50)),
             require_login=require_login,
@@ -59,6 +77,31 @@ async def freelanceru_project(project_id_or_url: str, require_login: bool = True
         return await client.project(project_id_or_url, require_login=require_login)
 
     return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_categories() -> dict[str, Any]:
+    """Return supported Freelance.ru search category and payment filter IDs."""
+
+    return {
+        "categories": CATEGORIES,
+        "payment_types": PAYMENT_TYPES,
+        "search_endpoint": "https://freelance.ru/project/search/pro",
+        "query_params": {
+            "q": "keywords, comma-separated",
+            "e": "excluded words, comma-separated",
+            "m": "or|and keyword mode",
+            "c[]": "category ids",
+            "f": "min budget",
+            "t": "max budget",
+            "a": "1 include projects open for all",
+            "v": "1 include premium access projects",
+            "o": "1 include projects without specified budget",
+            "b[]": "payment type ids",
+            "page": "page number",
+            "per-page": "items per page",
+        },
+    }
 
 
 @mcp.tool()
