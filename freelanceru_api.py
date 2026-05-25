@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -16,6 +16,17 @@ LOGIN_URL = f"{ID_BASE_URL}/api/auth/login"
 SESSION_URL = f"{ID_BASE_URL}/api/auth/session"
 CAPTCHA_REQUIRED_URL = f"{ID_BASE_URL}/api/auth/login/captcha-required"
 PROJECTS_URL = f"{BASE_URL}/project/search/pro"
+TALK_BASE_URL = "https://talk.freelance.ru"
+PROTECTED_PAGES = {
+    "profile": "/profile/personal",
+    "my_applications": "/setup/?cmd=myprojects#my_proj_req",
+    "bookmarks": "/setup/?cmd=bookmarks",
+    "offers": "/offer/my",
+    "partners": "/partners/my",
+    "market": "/market/my",
+    "contests": "/tender/contest/my",
+    "finance": "/profile/finance",
+}
 
 CATEGORIES = {
     "3d": {"id": "577", "name": "3D графика"},
@@ -115,9 +126,55 @@ class FreelanceRuClient:
                 detail += "; captcha is required"
             raise FreelanceRuError(f"login failed: {detail}")
 
-        await self.http.get(f"{BASE_URL}/profile/after-login")
+        await self.establish_main_session()
         self._logged_in = True
         return True
+
+    async def establish_main_session(self, return_url: str = "/profile/personal") -> None:
+        response = await self.http.get(
+            f"{BASE_URL}/auth/login",
+            params={"return_url": return_url},
+            follow_redirects=False,
+        )
+        location = response.headers.get("location", "")
+        if not location.startswith(ID_BASE_URL):
+            await self.http.get(f"{BASE_URL}/profile/after-login")
+            return
+        query = dict(parse_qsl(urlparse(location).query))
+        if not query.get("client_id") or not query.get("redirect_uri"):
+            raise FreelanceRuError("main site OAuth redirect is missing required parameters")
+        check = await self.http.get(
+            f"{ID_BASE_URL}/api/authorize/check",
+            params={"client_id": query["client_id"], "redirect_uri": query["redirect_uri"]},
+        )
+        check.raise_for_status()
+        authorize = await self.http.post(f"{ID_BASE_URL}/api/authorize", json={}, params=query)
+        authorize.raise_for_status()
+        data = authorize.json()
+        if not data.get("code"):
+            raise FreelanceRuError("main site OAuth authorization did not return a code")
+        callback_params = {"code": data["code"], "state": query.get("state", "")}
+        if data.get("scope"):
+            callback_params["scope"] = data["scope"]
+        callback_url = f"{query['redirect_uri']}?{urlencode(callback_params)}"
+        await self.http.get(callback_url)
+
+    async def establish_talk_session(self) -> None:
+        response = await self.http.get(f"{TALK_BASE_URL}/api/auth/login", follow_redirects=False)
+        location = response.headers.get("location", "")
+        if not location.startswith(ID_BASE_URL):
+            return
+        query = dict(parse_qsl(urlparse(location).query))
+        authorize = await self.http.post(f"{ID_BASE_URL}/api/authorize", json={}, params=query)
+        authorize.raise_for_status()
+        data = authorize.json()
+        if not data.get("code"):
+            raise FreelanceRuError("talk OAuth authorization did not return a code")
+        callback_params = {"code": data["code"], "state": query.get("state", "")}
+        if data.get("scope"):
+            callback_params["scope"] = data["scope"]
+        callback_url = f"{query['redirect_uri']}?{urlencode(callback_params)}"
+        await self.http.get(callback_url)
 
     async def captcha_required(self) -> bool:
         response = await self.http.get(CAPTCHA_REQUIRED_URL)
@@ -195,7 +252,102 @@ class FreelanceRuClient:
         url = normalize_project_url(project_id_or_url)
         response = await self.http.get(url)
         response.raise_for_status()
-        return parse_project_detail(response.text, url)
+        return parse_project_detail(response.text, str(response.url))
+
+    async def notifications(
+        self,
+        folder_id: str | int | None = None,
+        require_login: bool = True,
+    ) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        path = "/notification" if folder_id is None else f"/notification/folder/{folder_id}"
+        response = await self.http.get(urljoin(BASE_URL, path))
+        response.raise_for_status()
+        return parse_notifications(response.text, str(response.url))
+
+    async def page_section(self, section: str, require_login: bool = True) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        if section not in PROTECTED_PAGES:
+            raise FreelanceRuError(f"unknown section: {section}")
+        response = await self.http.get(urljoin(BASE_URL, PROTECTED_PAGES[section]))
+        response.raise_for_status()
+        return parse_page_summary(response.text, str(response.url), section=section)
+
+    async def offer_form(self, project_id_or_url: str, require_login: bool = True) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        project_id = extract_project_id(project_id_or_url)
+        if not project_id:
+            detail = await self.project(project_id_or_url, require_login=False)
+            project_id = detail.get("id")
+        response = await self.http.get(f"{BASE_URL}/project/discussion/start/{project_id}")
+        response.raise_for_status()
+        return parse_offer_form(response.text, str(response.url), project_id=str(project_id), redact=True)
+
+    async def submit_offer(
+        self,
+        project_id_or_url: str,
+        message: str,
+        cost: int | None = None,
+        term: int | None = None,
+        question: str = "",
+        signature: bool = True,
+        dry_run: bool = True,
+        require_login: bool = True,
+    ) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        project_id = extract_project_id(project_id_or_url)
+        if not project_id:
+            detail = await self.project(project_id_or_url, require_login=False)
+            project_id = detail.get("id")
+        response = await self.http.get(f"{BASE_URL}/project/discussion/start/{project_id}")
+        response.raise_for_status()
+        form = parse_offer_form(response.text, str(response.url), project_id=str(project_id), redact=False)
+        if form.get("access_denied") or not form.get("can_submit"):
+            return {"submitted": False, "dry_run": dry_run, "form": form}
+        data = dict(form.get("fields", {}))
+        data["StartDiscussionForm[message]"] = message
+        data["StartDiscussionForm[question]"] = question
+        data["StartDiscussionForm[signature]"] = "1" if signature else "0"
+        if cost is not None:
+            data["StartDiscussionForm[cost]"] = str(cost)
+        if term is not None:
+            data["StartDiscussionForm[term]"] = str(term)
+        if dry_run:
+            return {"submitted": False, "dry_run": True, "action": form.get("action"), "payload": redact_csrf(data), "form": form}
+        response = await self.http.post(str(form["action"]), data=data, headers={"Referer": str(form["url"])})
+        response.raise_for_status()
+        return parse_submit_result(response.text, str(response.url))
+
+    async def talk_me(self, require_login: bool = True) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        response = await self.http.get(f"{TALK_BASE_URL}/api/me")
+        if response.status_code == 401:
+            await self.establish_talk_session()
+            response = await self.http.get(f"{TALK_BASE_URL}/api/me")
+        if response.status_code == 401:
+            return {"authenticated": False, "note": "talk.freelance.ru OAuth failed"}
+        response.raise_for_status()
+        return {"authenticated": True, "me": response.json()}
+
+    async def talk_chats(self, offset: int = 0, require_login: bool = True) -> dict[str, Any]:
+        if require_login:
+            await self.ensure_login()
+        response = await self.http.get(f"{TALK_BASE_URL}/api/chats", params={"offset": max(0, offset)})
+        if response.status_code == 401:
+            await self.establish_talk_session()
+            response = await self.http.get(f"{TALK_BASE_URL}/api/chats", params={"offset": max(0, offset)})
+        if response.status_code == 401:
+            return {"authenticated": False, "items": [], "note": "talk.freelance.ru OAuth failed"}
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict):
+            return data
+        return {"items": data}
 
 
 def normalize_project_url(project_id_or_url: str) -> str:
@@ -317,18 +469,130 @@ def parse_project_detail(page: str, url: str) -> dict[str, Any]:
     title = clean_text(h1.get_text(" ", strip=True) if h1 else "")
     text = clean_text(soup.get_text(" ", strip=True))
     budget = parse_budget(text)
+    offer_link = soup.select_one('a[href^="/project/discussion/start/"]')
+    access_denied = "Доступ к этому заданию" in text or "Dostup k etomu zadaniyu" in text
     return {
         "id": project_id_from_url(url),
         "url": url,
         "title": title,
         "budget": budget,
         "currency": "RUB",
+        "access_denied": access_denied,
+        "offer_url": urljoin(BASE_URL, offer_link.get("href")) if offer_link else None,
         "text": text[:8000],
     }
 
 
+def parse_notifications(page: str, url: str) -> dict[str, Any]:
+    soup = BeautifulSoup(page, "html.parser")
+    text = clean_text(soup.get_text(" ", strip=True))
+    folders = []
+    for link in soup.select('a[href^="/notification/folder/"]'):
+        href = link.get("href", "")
+        folder_id = href.rstrip("/").split("/")[-1]
+        folders.append({"id": folder_id, "title": clean_text(link.get_text(" ", strip=True)), "url": urljoin(BASE_URL, href)})
+    items = []
+    for link in soup.select('a[href]'):
+        href = link.get("href", "")
+        label = clean_text(link.get_text(" ", strip=True))
+        if label and "/notification" not in href and len(label) > 8:
+            items.append({"title": label[:300], "url": urljoin(BASE_URL, href)})
+    return {"url": url, "empty": "Уведомлений нет" in text, "folders": unique_items(folders), "items": unique_items(items)[:50], "text": text[:4000]}
+
+
+def parse_page_summary(page: str, url: str, section: str) -> dict[str, Any]:
+    soup = BeautifulSoup(page, "html.parser")
+    title_node = soup.find("h1") or soup.find("h2")
+    title = clean_text(title_node.get_text(" ", strip=True) if title_node else soup.title.string if soup.title else "")
+    text = clean_text(soup.get_text(" ", strip=True))
+    links = []
+    for link in soup.select("a[href]"):
+        label = clean_text(link.get_text(" ", strip=True))
+        if label:
+            links.append({"title": label[:160], "url": urljoin(BASE_URL, link.get("href", ""))})
+    return {"section": section, "url": url, "title": title, "links": unique_items(links)[:80], "text": text[:8000]}
+
+
+def parse_offer_form(page: str, url: str, project_id: str, redact: bool = True) -> dict[str, Any]:
+    soup = BeautifulSoup(page, "html.parser")
+    text = clean_text(soup.get_text(" ", strip=True))
+    form = soup.find("form")
+    fields: dict[str, str] = {}
+    if form:
+        for field in form.find_all(["input", "textarea", "select"]):
+            name = field.get("name")
+            if not name:
+                continue
+            if field.name == "textarea":
+                value = field.get_text()
+            else:
+                value = field.get("value", "")
+            if field.get("type") == "checkbox" and not field.has_attr("checked"):
+                continue
+            fields[name] = value
+    output_fields = redact_csrf(fields) if redact else fields
+    return {
+        "project_id": project_id,
+        "url": url,
+        "action": urljoin(BASE_URL, form.get("action", "")) if form else None,
+        "method": (form.get("method", "get").lower() if form else None),
+        "can_submit": bool(form and soup.select_one('button[type="submit"], input[type="submit"]')),
+        "access_denied": "Доступ к этому заданию" in text,
+        "daily_remaining": parse_daily_remaining(text),
+        "fields": output_fields,
+        "required_payload_keys": [
+            "StartDiscussionForm[cost]",
+            "StartDiscussionForm[term]",
+            "StartDiscussionForm[message]",
+            "StartDiscussionForm[question]",
+            "StartDiscussionForm[signature]",
+        ],
+        "text": text[:5000],
+    }
+
+
+def parse_submit_result(page: str, url: str) -> dict[str, Any]:
+    soup = BeautifulSoup(page, "html.parser")
+    text = clean_text(soup.get_text(" ", strip=True))
+    return {"submitted": True, "dry_run": False, "url": url, "text": text[:4000]}
+
+
+def parse_daily_remaining(text: str) -> int | None:
+    match = re.search(r"Осталось\s+(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def redact_csrf(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: ("<csrf>" if key == "_csrf" and value else value) for key, value in data.items()}
+
+
+def unique_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = set()
+    result = []
+    for item in items:
+        marker = tuple(sorted(item.items()))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(item)
+    return result
+
+
+def extract_project_id(value: str) -> str | None:
+    text = str(value)
+    match = re.search(r"(?:-|/)(\d+)(?:\.html|$|[/?#])", text)
+    if match:
+        return match.group(1)
+    if text.strip().isdigit():
+        return text.strip()
+    return None
+
+
 def project_id_from_url(url: str) -> str:
     match = re.search(r"-(\d+)\.html(?:$|\?)", url)
+    if match:
+        return match.group(1)
+    match = re.search(r"/(?:no-access|discussion/start)/(\d+)(?:$|[/?#])", url)
     if match:
         return match.group(1)
     return hashlib.md5(url.encode()).hexdigest()[:12]

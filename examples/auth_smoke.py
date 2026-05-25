@@ -26,6 +26,20 @@ async def main():
         print(f"auth_projects={len(projects)}")
         if projects:
             print(projects[0]["title"])
+        notifications = await client.notifications()
+        print("notifications_empty=", notifications.get("empty"))
+        profile = await client.page_section("profile")
+        print("profile_title=", profile.get("title"))
+        applications = await client.page_section("my_applications")
+        print("applications_title=", applications.get("title"))
+        offer_form = await client.offer_form("1668535")
+        print("offer_can_submit=", offer_form.get("can_submit"))
+        dry_run = await client.submit_offer("1668535", "Test dry run only", dry_run=True)
+        print("dry_run=", dry_run.get("dry_run"))
+        talk_me = await client.talk_me()
+        print("talk_authenticated=", talk_me.get("authenticated"))
+        talk_chats = await client.talk_chats()
+        print("talk_chats=", len(talk_chats.get("items", [])))
     finally:
         await client.close()
 

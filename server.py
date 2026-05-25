@@ -5,7 +5,7 @@ from typing import Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from freelanceru_api import CATEGORIES, PAYMENT_TYPES, FreelanceRuClient
+from freelanceru_api import CATEGORIES, PAYMENT_TYPES, PROTECTED_PAGES, FreelanceRuClient
 
 load_dotenv()
 
@@ -80,12 +80,91 @@ async def freelanceru_project(project_id_or_url: str, require_login: bool = True
 
 
 @mcp.tool()
+async def freelanceru_notifications(folder_id: str = "", require_login: bool = True) -> dict[str, Any]:
+    """Fetch notifications or a notification folder."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.notifications(folder_id or None, require_login=require_login)
+
+    return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_page(section: str, require_login: bool = True) -> dict[str, Any]:
+    """Fetch account pages: profile, my_applications, bookmarks, offers, partners, market, contests, finance."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.page_section(section, require_login=require_login)
+
+    return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_offer_form(project_id_or_url: str, require_login: bool = True) -> dict[str, Any]:
+    """Read the proposal form for a project without submitting anything."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.offer_form(project_id_or_url, require_login=require_login)
+
+    return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_submit_offer(
+    project_id_or_url: str,
+    message: str,
+    cost: int | None = None,
+    term: int | None = None,
+    question: str = "",
+    signature: bool = True,
+    dry_run: bool = True,
+    require_login: bool = True,
+) -> dict[str, Any]:
+    """Prepare or submit a project proposal. dry_run defaults to true and does not publish."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.submit_offer(
+            project_id_or_url=project_id_or_url,
+            message=message,
+            cost=cost,
+            term=term,
+            question=question,
+            signature=signature,
+            dry_run=dry_run,
+            require_login=require_login,
+        )
+
+    return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_talk_me(require_login: bool = True) -> dict[str, Any]:
+    """Read talk.freelance.ru account info when the HTTP session has talk access."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.talk_me(require_login=require_login)
+
+    return await with_client(run)
+
+
+@mcp.tool()
+async def freelanceru_talk_chats(offset: int = 0, require_login: bool = True) -> dict[str, Any]:
+    """Read talk.freelance.ru chats when the HTTP session has talk access."""
+
+    async def run(client: FreelanceRuClient):
+        return await client.talk_chats(offset=offset, require_login=require_login)
+
+    return await with_client(run)
+
+
+@mcp.tool()
 async def freelanceru_categories() -> dict[str, Any]:
     """Return supported Freelance.ru search category and payment filter IDs."""
 
     return {
         "categories": CATEGORIES,
         "payment_types": PAYMENT_TYPES,
+        "account_sections": sorted(PROTECTED_PAGES),
         "search_endpoint": "https://freelance.ru/project/search/pro",
         "query_params": {
             "q": "keywords, comma-separated",
