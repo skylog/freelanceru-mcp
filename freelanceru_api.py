@@ -465,9 +465,12 @@ def parse_projects(page: str) -> list[Project]:
 
 def parse_project_detail(page: str, url: str) -> dict[str, Any]:
     soup = BeautifulSoup(page, "html.parser")
-    h1 = soup.find("h1") or soup.find("h2")
+    detail_root = _find_project_detail_root(soup)
+    h1 = (detail_root.find("h1") or detail_root.find("h2")) if detail_root else None
+    if not h1:
+        h1 = soup.find("h1") or soup.find("h2")
     title = clean_text(h1.get_text(" ", strip=True) if h1 else "")
-    text = clean_text(soup.get_text(" ", strip=True))
+    text = clean_text(detail_root.get_text(" ", strip=True) if detail_root else soup.get_text(" ", strip=True))
     budget = parse_budget(text)
     offer_link = soup.select_one('a[href^="/project/discussion/start/"]')
     access_denied = "Доступ к этому заданию" in text or "Dostup k etomu zadaniyu" in text
@@ -481,6 +484,28 @@ def parse_project_detail(page: str, url: str) -> dict[str, Any]:
         "offer_url": urljoin(BASE_URL, offer_link.get("href")) if offer_link else None,
         "text": text[:8000],
     }
+
+
+def _find_project_detail_root(soup: BeautifulSoup):
+    for selector in (
+        ".item-no-access",
+        "article.task-card",
+        ".task-card__main",
+        ".task-card__body",
+        ".task-card__content",
+        ".item-box",
+        "main",
+    ):
+        node = soup.select_one(selector)
+        if node:
+            return node
+    body = soup.body
+    if body:
+        for selector in ("footer", ".footer", ".footer__menu", ".footer-bottom", ".container--footer", ".item-overlay"):
+            for node in body.select(selector):
+                node.decompose()
+        return body
+    return soup
 
 
 def parse_notifications(page: str, url: str) -> dict[str, Any]:
